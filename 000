@@ -1,0 +1,265 @@
+import numpy as np
+import random
+
+
+class SimpleTokenizer:
+    def __init__(self, texts):
+        self.texts = texts
+        self.all_text = "\n".join(texts)
+
+        self.chars = sorted(list(set(self.all_text)))
+        self.vocab_size = len(self.chars)
+
+        self.char_to_idx = {ch: i for i, ch in enumerate(self.chars)}
+        self.idx_to_char = {i: ch for i, ch in enumerate(self.chars)}
+
+    def print_info(self):
+        print("训练文本：")
+        print(self.all_text)
+        print("-" * 30)
+        print("字符表：", self.chars)
+        print("词表大小：", self.vocab_size)
+        print("-" * 30)
+
+    def char_to_index(self, ch):
+        return self.char_to_idx.get(ch, None)
+
+    def index_to_char(self, idx):
+        return self.idx_to_char.get(idx, None)
+
+    def one_hot(self, index):
+        vec = np.zeros((self.vocab_size, 1))
+        vec[index] = 1.0
+        return vec
+
+    def build_dataset(self):
+        X_indices = []
+        Y_indices = []
+
+        for i in range(len(self.all_text) - 1):
+            current_char = self.all_text[i]
+            next_char = self.all_text[i + 1]
+
+            X_indices.append(self.char_to_idx[current_char])
+            Y_indices.append(self.char_to_idx[next_char])
+
+        X_indices = np.array(X_indices)
+        Y_indices = np.array(Y_indices)
+
+        return X_indices, Y_indices
+
+
+class DenseLanguageModel:
+    def __init__(self, vocab_size, hidden_size=16, seed=42):
+        np.random.seed(seed)
+
+        self.vocab_size = vocab_size
+        self.hidden_size = hidden_size
+
+        self.W1 = np.random.randn(hidden_size, vocab_size) * 0.01
+        self.b1 = np.zeros((hidden_size, 1))
+
+        self.W2 = np.random.randn(vocab_size, hidden_size) * 0.01
+        self.b2 = np.zeros((vocab_size, 1))
+
+    def relu(self, x):
+        return np.maximum(0, x)
+
+    def relu_grad(self, x):
+        return (x > 0).astype(float)
+
+    def softmax(self, x):
+        x = x - np.max(x)
+        exp_x = np.exp(x)
+        return exp_x / np.sum(exp_x)
+
+    def forward(self, x):
+        z1 = np.dot(self.W1, x) + self.b1
+        a1 = self.relu(z1)
+
+        z2 = np.dot(self.W2, a1) + self.b2
+        y_pred = self.softmax(z2)
+
+        cache = (x, z1, a1, z2, y_pred)
+        return y_pred, cache
+
+    def compute_loss(self, y_pred, y_true_idx):
+        return -np.log(y_pred[y_true_idx, 0] + 1e-12)
+
+    def backward(self, cache, y_true_idx):
+        x, z1, a1, z2, y_pred = cache
+
+        dz2 = y_pred.copy()
+        dz2[y_true_idx] -= 1.0
+
+        dW2 = np.dot(dz2, a1.T)
+        db2 = dz2
+
+        da1 = np.dot(self.W2.T, dz2)
+        dz1 = da1 * self.relu_grad(z1)
+
+        dW1 = np.dot(dz1, x.T)
+        db1 = dz1
+
+        return dW1, db1, dW2, db2
+
+    def update(self, dW1, db1, dW2, db2, learning_rate):
+        self.W1 -= learning_rate * dW1
+        self.b1 -= learning_rate * db1
+        self.W2 -= learning_rate * dW2
+        self.b2 -= learning_rate * db2
+
+    def predict_proba(self, x):
+        y_pred, _ = self.forward(x)
+        return y_pred
+
+
+class Trainer:
+    def __init__(self, model, tokenizer, learning_rate=0.1, epochs=200):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+
+    def train(self, X_indices, Y_indices):
+        for epoch in range(self.epochs):
+            total_loss = 0.0
+
+            for i in range(len(X_indices)):
+                x_idx = X_indices[i]
+                y_true_idx = Y_indices[i]
+
+                x = self.tokenizer.one_hot(x_idx)
+
+                y_pred, cache = self.model.forward(x)
+                loss = self.model.compute_loss(y_pred, y_true_idx)
+                total_loss += loss
+
+                dW1, db1, dW2, db2 = self.model.backward(cache, y_true_idx)
+                self.model.update(dW1, db1, dW2, db2, self.learning_rate)
+
+            avg_loss = total_loss / len(X_indices)
+
+            if (epoch + 1) % 20 == 0:
+                print(f"第 {epoch + 1} 轮，平均损失: {avg_loss:.4f}")
+
+        print("-" * 30)
+        print("训练完成！")
+        print("-" * 30)
+
+
+class InferenceEngine:
+    def __init__(self, model, tokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+
+    def predict_next_char(self, input_char):
+        idx = self.tokenizer.char_to_index(input_char)
+        if idx is None:
+            return None, None
+
+        x = self.tokenizer.one_hot(idx)
+        y_pred = self.model.predict_proba(x)
+
+        pred_idx = np.argmax(y_pred)
+        pred_char = self.tokenizer.index_to_char(pred_idx)
+        prob = y_pred[pred_idx, 0]
+
+        return pred_char, prob
+
+    def generate_text(self, start_text, length=8):
+        if len(start_text) == 0:
+            return ""
+
+        result = start_text
+
+        for _ in range(length):
+            last_char = result[-1]
+            next_char, prob = self.predict_next_char(last_char)
+
+            if next_char is None:
+                result += "?"
+                break
+
+            result += next_char
+
+        return result
+
+    def interactive_demo(self):
+        test_chars = ["今", "我", "人", "写", "数"]
+
+        for ch in test_chars:
+            pred_char, prob = self.predict_next_char(ch)
+            if pred_char is None:
+                print(f"输入 '{ch}' 不在词表里")
+            else:
+                print(f"输入 '{ch}' -> 预测下一个字: '{pred_char}'，概率: {prob:.4f}")
+
+        print("-" * 30)
+        print("现在你可以自己输入一个字，看看模型预测下一个字。")
+        print("输入 quit 退出。")
+
+        while True:
+            user_input = input("请输入一个字，或输入一小段文本让我续写：").strip()
+
+            if user_input.lower() == "quit":
+                print("已退出。")
+                break
+
+            if user_input == "":
+                print("你还没输入内容。")
+                continue
+
+            if len(user_input) == 1:
+                pred_char, prob = self.predict_next_char(user_input)
+                if pred_char is None:
+                    print("这个字没有出现在训练集里。")
+                else:
+                    print(f"预测下一个字是：'{pred_char}'，概率: {prob:.4f}")
+            else:
+                output = self.generate_text(user_input, length=8)
+                print("续写结果：", output)
+
+
+class App:
+    def __init__(self):
+        random.seed(42)
+        np.random.seed(42)
+
+        self.texts = [
+            "今天天气很好",
+            "今天心情很好",
+            "我喜欢学习人工智能",
+            "人工智能很有趣",
+            "我喜欢写代码",
+            "写代码很有趣",
+            "机器学习很重要",
+            "深度学习很强大",
+            "我想学习模型训练",
+            "模型训练需要数据",
+            "数据很重要",
+            "我喜欢学习",
+        ]
+
+        self.tokenizer = SimpleTokenizer(self.texts)
+        self.model = DenseLanguageModel(vocab_size=self.tokenizer.vocab_size, hidden_size=16)
+        self.trainer = Trainer(self.model, self.tokenizer, learning_rate=0.1, epochs=200)
+        self.inference = InferenceEngine(self.model, self.tokenizer)
+
+    def run(self):
+        self.tokenizer.print_info()
+
+        X_indices, Y_indices = self.tokenizer.build_dataset()
+
+        print("样本数：", len(X_indices))
+        print("前10个输入字符索引：", X_indices[:10])
+        print("前10个标签字符索引：", Y_indices[:10])
+        print("-" * 30)
+
+        self.trainer.train(X_indices, Y_indices)
+        self.inference.interactive_demo()
+
+
+if __name__ == "__main__":
+    app = App()
+    app.run()
